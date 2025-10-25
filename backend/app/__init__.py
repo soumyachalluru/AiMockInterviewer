@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.api import greet, session, interview, auth 
 
 from .api.interview import router as interview_router
 from .api.greet import router as greet_router
@@ -21,5 +22,6 @@ def create_app() -> FastAPI:
     app.include_router(interview_router, prefix="/interview", tags=["interview"])
     app.include_router(greet_router, tags=["misc"])
     app.include_router(session_router)
+    app.include_router(auth.router)
 
     return app
