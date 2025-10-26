@@ -1,244 +1,151 @@
-// import React, { useState } from 'react';
-// import { useNavigate } from 'react-router-dom';
-// import axios from 'axios';
-// import './SelectRole.css';
-
-// const SelectRole = () => {
-//   const [company, setCompany] = useState('');
-//   const [level, setLevel] = useState('');
-//   const [role, setRole] = useState('');
-//   const [loading, setLoading] = useState(false);
-//   const navigate = useNavigate();
-
-//   const companies = ['Google', 'Meta', 'Amazon', 'OpenAI'];
-//   const levels = ['L1', 'L2', 'L3', 'L4'];
-//   const roles = ['Data Analyst', 'Data Scientist', 'ML Engineer'];
-
-//   const handleStart = async () => {
-//     if (!company || !level || !role) {
-//       alert('Please select company, level, and role before starting.');
-//       return;
-//     }
-
-//     setLoading(true);
-
-//     // make user_text more natural for NER to parse
-//     const user_text = `I have an interview at ${company} for a ${role} position at level ${level}`;
-
-//     try {
-//       const response = await axios.post('http://127.0.0.1:8000/session', {
-//         user_text,
-//         session_id: null,
-//       });
-
-//       const { session_id, question } = response.data;
-//       navigate('/interview', { state: { session_id, question } });
-//     } catch (error) {
-//       console.error('Failed to create session:', error);
-//       alert('Error: Unable to start session. Please try again.');
-//     } finally {
-//       setLoading(false);
-//     }
-//   };
-
-//   return (
-//     <div className="container">
-//       <div className="card">
-//         <h1 className="heading">Customize Your Mock Interview</h1>
-
-//         <div className="section">
-//           <h2>Select Your Company</h2>
-//           <div className="company-grid">
-//             {companies.map((c) => (
-//               <button
-//                 key={c}
-//                 className={`btn company-btn ${company === c ? 'selected' : ''}`}
-//                 onClick={() => setCompany(c)}
-//               >
-//                 {c}
-//               </button>
-//             ))}
-//           </div>
-//         </div>
-
-//         <div className="section">
-//           <h2>Select Your Level</h2>
-//           <select
-//             value={level}
-//             onChange={(e) => setLevel(e.target.value)}
-//             className="dropdown"
-//           >
-//             <option value="">-- Select Level --</option>
-//             {levels.map((l) => (
-//               <option key={l} value={l}>{l}</option>
-//             ))}
-//           </select>
-//         </div>
-
-//         <div className="section">
-//           <h2>Select Your Role</h2>
-//           <div className="role-grid">
-//             {roles.map((r) => (
-//               <button
-//                 key={r}
-//                 className={`btn role-btn ${role === r ? 'selected' : ''}`}
-//                 onClick={() => setRole(r)}
-//               >
-//                 {r}
-//               </button>
-//             ))}
-//           </div>
-//         </div>
-
-//         <p className="preview">
-//           {company && level && role
-//             ? `Preview: Prep for ${company} ${level} ${role}`
-//             : 'Please select all options to see your interview preview.'}
-//         </p>
-
-//         <button onClick={handleStart} className="start-btn" disabled={loading}>
-//           {loading ? 'Starting...' : 'Start Interview'}
-//         </button>
-//       </div>
-//     </div>
-//   );
-// };
-
-// export default SelectRole;
-
-import React, { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import React, { useMemo, useState } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import axios from "axios";
 import "./SelectRole.css";
 
-const SelectRole = () => {
-  const [company, setCompany] = useState("");
-  const [level, setLevel] = useState("");
-  const [role, setRole] = useState("");
-  const [loading, setLoading] = useState(false);
-  const navigate = useNavigate();
+const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
-  // 🔹 Logout handler
+const SelectRole = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const email = location.state?.email || localStorage.getItem("email") || "";
+
+  const [company, setCompany] = useState("");
+  const [level, setLevel] = useState("");     // free text (e.g., L2, junior)
+  const [role, setRole] = useState("");
+  const [brief, setBrief] = useState("");     // free text for NER enrichment
+  const [agree, setAgree] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const canStart = useMemo(() => {
+    return company.trim() && role.trim() && agree;
+  }, [company, role, agree]);
+
+  const handleStart = async () => {
+    if (!canStart) return;
+    setLoading(true);
+    setError("");
+
+    // compose a natural sentence for backward compatibility with your pipeline
+    const composed =
+      `I have an interview at ${company} for a ${role}` +
+      (level?.trim() ? ` position at level ${level}` : "") + ".";
+    const extra = brief?.trim() ? ` Additional context: ${brief}` : "";
+
+    const payload = {
+      user_text: composed + extra,   // what your current backend expects
+      session_id: null,
+      // also send structured fields so backend can prefer them over NER
+      company,
+      role,
+      level,
+      email: email || undefined,
+    };
+
+    try {
+      const res = await axios.post(`${API}/session`, payload);
+      const { session_id, question } = res.data;
+      navigate("/interview", { state: { session_id, question } });
+    } catch (e) {
+      console.error("Failed to create session:", e);
+      setError("Unable to start session. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleLogout = () => {
     localStorage.clear();
     sessionStorage.clear();
     navigate("/", { replace: true });
   };
 
-  const companies = ["Google", "Meta", "Amazon", "OpenAI"];
-  const levels = ["L1", "L2", "L3", "L4"];
-  const roles = ["Data Analyst", "Data Scientist", "ML Engineer"];
-
-  const handleStart = async () => {
-    if (!company || !level || !role) {
-      alert("Please select company, level, and role before starting.");
-      return;
-    }
-
-    setLoading(true);
-
-    const user_text = `I have an interview at ${company} for a ${role} position at level ${level}`;
-
-    try {
-      const response = await axios.post("http://127.0.0.1:8000/session", {
-        user_text,
-        session_id: null,
-      });
-
-      const { session_id, question } = response.data;
-      navigate("/interview", { state: { session_id, question } });
-    } catch (error) {
-      console.error("Failed to create session:", error);
-      alert("Error: Unable to start session. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
   return (
     <div className="container">
       <div className="card">
-        {/* 🔹 Header with Logout */}
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            marginBottom: "20px",
-          }}
-        >
-          <h1 className="heading">Customize Your Mock Interview</h1>
-          <button
-            onClick={handleLogout}
-            style={{
-              backgroundColor: "black",
-              color: "white",
-              border: "none",
-              borderRadius: "6px",
-              padding: "10px 18px",
-              cursor: "pointer",
-              fontWeight: "bold",
-            }}
-          >
-            Logout
-          </button>
+        {/* header */}
+        <div className="header-row">
+          <h1 className="heading">Start Interview</h1>
+          <button className="logout-btn" onClick={handleLogout}>Logout</button>
         </div>
 
+        {/* company */}
         <div className="section">
-          <h2>Select Your Company</h2>
-          <div className="company-grid">
-            {companies.map((c) => (
-              <button
-                key={c}
-                className={`btn company-btn ${
-                  company === c ? "selected" : ""
-                }`}
-                onClick={() => setCompany(c)}
-              >
-                {c}
-              </button>
-            ))}
-          </div>
+          <label className="field-label">Company</label>
+          <input
+            className="text-input"
+            placeholder="e.g., Adobe"
+            value={company}
+            onChange={(e) => setCompany(e.target.value)}
+          />
         </div>
 
+        {/* level */}
         <div className="section">
-          <h2>Select Your Level</h2>
-          <select
+          <label className="field-label">
+            Level <span className="muted">(optional)</span>
+          </label>
+          <input
+            className="text-input"
+            placeholder="e.g., L2 / Junior"
             value={level}
             onChange={(e) => setLevel(e.target.value)}
-            className="dropdown"
-          >
-            <option value="">-- Select Level --</option>
-            {levels.map((l) => (
-              <option key={l} value={l}>
-                {l}
-              </option>
-            ))}
-          </select>
+          />
         </div>
 
+        {/* role */}
         <div className="section">
-          <h2>Select Your Role</h2>
-          <div className="role-grid">
-            {roles.map((r) => (
-              <button
-                key={r}
-                className={`btn role-btn ${role === r ? "selected" : ""}`}
-                onClick={() => setRole(r)}
-              >
-                {r}
-              </button>
-            ))}
+          <label className="field-label">Role</label>
+          <input
+            className="text-input"
+            placeholder="e.g., Data Scientist"
+            value={role}
+            onChange={(e) => setRole(e.target.value)}
+          />
+        </div>
+
+        {/* brief (for NER) */}
+        <div className="section">
+          <label className="field-label">
+            Tell us about this interview <span className="muted"></span>
+          </label>
+          <textarea
+            className="textarea"
+            rows={4}
+            placeholder="e.g., Onsite next week in SF. Focus on ML system design, experimentation (A/B testing), metrics, and dashboards."
+            value={brief}
+            onChange={(e) => setBrief(e.target.value)}
+          />
+          <div className="helper-text">
+            tip: include location/timing + focus areas to get better questions.
           </div>
         </div>
 
-        <p className="preview">
-          {company && level && role
-            ? `Preview: Prep for ${company} ${level} ${role}`
-            : "Please select all options to see your interview preview."}
-        </p>
+        {/* terms */}
+        <div className="section terms-row">
+          <label className="terms">
+            <input
+              type="checkbox"
+              checked={agree}
+              onChange={(e) => setAgree(e.target.checked)}
+            />
+            <span>
+              I agree to the{" "}
+              <a href="#" onClick={(e) => e.preventDefault()}>
+                Terms &amp; Conditions
+              </a>
+            </span>
+          </label>
+        </div>
 
-        <button onClick={handleStart} className="start-btn" disabled={loading}>
+        {error && <p className="error-text">{error}</p>}
+
+        <button
+          onClick={handleStart}
+          className="start-btn"
+          disabled={!canStart || loading}
+        >
           {loading ? "Starting..." : "Start Interview"}
         </button>
       </div>
@@ -247,3 +154,4 @@ const SelectRole = () => {
 };
 
 export default SelectRole;
+

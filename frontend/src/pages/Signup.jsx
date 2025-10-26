@@ -1,7 +1,9 @@
+// src/pages/Signup.jsx
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
-import "./Welcome.css"; // reuse same style as login page
+import image from "/public/2207.i101.025.F.m004.c9.machine learning deep learning isometric.jpg";
+import "./Welcome.css"; // reuse same css
 
 const Signup = () => {
   const [email, setEmail] = useState("");
@@ -28,8 +30,8 @@ const Signup = () => {
         email,
         password,
       });
-      setSuccess(response.data.message);
-      setTimeout(() => navigate("/"), 1500);
+      setSuccess(response.data.message || "Account created");
+      setTimeout(() => navigate("/"), 1200);
     } catch (err) {
       if (err.response) setError(err.response.data.detail);
       else setError("Signup failed. Try again later.");
@@ -40,12 +42,22 @@ const Signup = () => {
 
   return (
     <div className="welcome-container">
+      {/* left image panel (same as welcome) */}
+      <div className="left-panel">
+        <img src={image} alt="AI Visual" className="ai-image" />
+        <p className="image-credit">
+          Image by{" "}
+          <a href="https://www.freepik.com" target="_blank" rel="noopener noreferrer">
+            macrovector on Freepik
+          </a>
+        </p>
+      </div>
+
+      {/* right form panel */}
       <div className="right-panel">
         <div className="login-card">
           <h2 className="login-title">Create an Account</h2>
-          <p className="login-subtitle">
-            Sign up to start practicing your mock interviews
-          </p>
+          <p className="login-subtitle">Sign up to start practicing your mock interviews</p>
 
           <form onSubmit={handleSignup}>
             <div className="input-group">
@@ -86,8 +98,10 @@ const Signup = () => {
             </button>
 
             <div className="signup-link">
-              Already have an account?{" "}
-              <a onClick={() => navigate("/")}>Login here</a>
+              already have an account?{" "}
+              <a onClick={() => navigate("/")} style={{ cursor: "pointer" }}>
+                login here
+              </a>
             </div>
           </form>
         </div>

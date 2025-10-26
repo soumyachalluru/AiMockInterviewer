@@ -1,11 +1,11 @@
 from motor.motor_asyncio import AsyncIOMotorClient
-from dotenv import load_dotenv
-import os
 
-load_dotenv()
+#MONGO_URL = "mongodb+srv://priyagovindarajulu_db_user:YOUR_PASSWORD@cluster0.prvspza.mongodb.net/?appName=Cluster0"
+MONGO_URL = "mongodb+srv://priyagovindarajulu_db_user:YOUR_PASSWORD@cluster0.prvspza.mongodb.net/?appName=Cluster0"
+DB_NAME = "ai_mock_interviewer"
 
-MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
-DB_NAME = os.getenv("DB_NAME", "ai_mock_interviewer")
-
-client = AsyncIOMotorClient(MONGO_URL)
+client = AsyncIOMotorClient(MONGO_URL, serverSelectionTimeoutMS=5000)
 db = client[DB_NAME]
+
+async def ping():
+    return await db.command("ping")

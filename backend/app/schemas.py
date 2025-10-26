@@ -1,9 +1,18 @@
 from pydantic import BaseModel
+from typing import Optional, List, Dict
+
+# ---- interview flow payloads / responses ----
 
 class StartPayload(BaseModel):
-    session_id: str | None = None
+    """
+    Payload to initialize an interview session.
+    - company/context are optional; used to craft a better first question.
+    """
+    session_id: Optional[str] = None
     role: str = "Data Scientist"
     seniority: str = "mid"
+    company: Optional[str] = None
+    context: Optional[str] = None
 
 class StartResponse(BaseModel):
     session_id: str
@@ -16,3 +25,9 @@ class AnswerPayload(BaseModel):
 class AnswerResponse(BaseModel):
     feedback: str
     question: str
+    score: Optional[int] = None  # 0..10
+
+# save overall session score at end
+class SaveScorePayload(BaseModel):
+    scores: Optional[List[Dict]] = None  # [{index:int, question:str, score:Optional[int]}]
+    overall: Optional[float] = None
