@@ -1,46 +1,123 @@
+# gpt.py
 """
 LLM wrapper compatible with openai-python v1.x
+- chat(messages) -> str
+- score_answer(question, answer) -> int (overall)
+- score_with_metrics(question, answer) -> dict (detailed metrics JSON)
 """
 
 import os
-from typing import List, Dict
+import json
+from typing import List, Dict, Any
 from openai import AsyncOpenAI
-# at top of gpt.py
-import datetime
-
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 
 async def chat(messages: List[Dict[str, str]]) -> str:
-    """
-    messages -> single assistant string
-    """
     resp = await client.chat.completions.create(
         model=MODEL,
         messages=messages,
         temperature=0.7,
     )
-    return resp.choices[0].message.content.strip()
+    return (resp.choices[0].message.content or "").strip()
 
-async def score_answer(question: str, answer: str) -> int:
-    """
-    return an integer 0..10 for how strong the answer is.
-    keep it deterministic and strict (no text, only an integer).
-    """
+
+# ---- Metrics scoring ----
+_SCORER_SYS = """You are a strict interviewer for data roles (Data Scientist, Data Engineer,
+Machine Learning Engineer, Data Analyst). You must return ONLY a single JSON object.
+Never add prose.
+
+Scoring rubric (each 0–10):
+- technical_correctness: factual accuracy, correct methods/terms, mistake-free reasoning.
+- clarity: structure, concise explanations, easy to follow.
+- completeness: covers key points the question expects (depth over fluff).
+- tone: professional and confident (neutral English).
+
+Overall:
+- overall = round((0.5*technical_correctness + 0.25*completeness + 0.2*clarity + 0.05*tone), 1)
+- Clamp each metric to [0,10].
+
+Flags (booleans):
+- gibberish: true if the answer is incoherent, meaningless, or spammy.
+- off_topic: true if answer ignores the question’s technical subject.
+- dont_know: true if the answer explicitly admits not knowing OR gives no info.
+- policy_violation: true if unsafe or disallowed content.
+
+Hard caps:
+- If gibberish OR off_topic OR dont_know -> set overall=0 (do not exceed 0).
+- If policy_violation -> set overall=0.
+
+Return JSON with:
+{
+  "technical_correctness": <0-10>,
+  "clarity": <0-10>,
+  "completeness": <0-10>,
+  "tone": <0-10>,
+  "overall": <0-10>,
+  "flags": { "gibberish": <bool>, "off_topic": <bool>, "dont_know": <bool>, "policy_violation": <bool> },
+  "notes": "<one short sentence explaining the main reason for the score>"
+}
+"""
+
+async def score_with_metrics(question: str, answer: str) -> Dict[str, Any]:
+    user = f"""Question: {question}
+
+Answer: {answer}
+
+Return ONLY the JSON described above."""
     resp = await client.chat.completions.create(
         model=MODEL,
-        temperature=0,  # deterministic scoring
+        temperature=0,
         messages=[
-            {"role": "system", "content": "Return ONLY an integer from 0 to 10 rating the candidate's answer quality. No text."},
-            {"role": "user", "content": f"Question: {question}\nAnswer: {answer}\nScore (0-10):"}
+            {"role": "system", "content": _SCORER_SYS},
+            {"role": "user", "content": user},
         ],
     )
     raw = (resp.choices[0].message.content or "").strip()
+
+    # Parse & sanitize
     try:
-        val = int("".join(ch for ch in raw if ch.isdigit()))
-        # clamp
-        return max(0, min(10, val))
+        obj = json.loads(raw)
     except Exception:
-        return 0
+        obj = {}
+
+    def _num(v, default=0.0):
+        try:
+            x = float(v)
+        except Exception:
+            x = default
+        return max(0.0, min(10.0, x))
+
+    metrics = {
+        "technical_correctness": _num(obj.get("technical_correctness")),
+        "clarity": _num(obj.get("clarity")),
+        "completeness": _num(obj.get("completeness")),
+        "tone": _num(obj.get("tone")),
+        "overall": _num(obj.get("overall")),
+        "flags": {
+            "gibberish": bool(obj.get("flags", {}).get("gibberish", False)),
+            "off_topic": bool(obj.get("flags", {}).get("off_topic", False)),
+            "dont_know": bool(obj.get("flags", {}).get("dont_know", False)),
+            "policy_violation": bool(obj.get("flags", {}).get("policy_violation", False)),
+        },
+        "notes": (obj.get("notes") or "").strip()[:300],
+    }
+
+    # Apply hard caps (your latest rule: any of these -> overall = 0)
+    f = metrics["flags"]
+    if f["gibberish"] or f["off_topic"] or f["dont_know"] or f["policy_violation"]:
+        metrics["overall"] = 0.0
+
+    # round to 1 decimal
+    for k in ("technical_correctness", "clarity", "completeness", "tone", "overall"):
+        metrics[k] = round(float(metrics[k]), 1)
+
+    return metrics
+
+
+async def score_answer(question: str, answer: str) -> int:
+    """Convenience wrapper that returns just the overall integer 0..10."""
+    m = await score_with_metrics(question, answer)
+    return int(round(m.get("overall", 0)))

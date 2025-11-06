@@ -1,8 +1,9 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr, field_validator
 from passlib.context import CryptContext
-from ..core.database import db                      # <-- relative import
 from pymongo.errors import DuplicateKeyError
+from datetime import datetime
+from ..core.database import db  # <-- relative import
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
@@ -37,20 +38,31 @@ class ForgotPasswordRequest(BaseModel):
 async def signup(payload: SignupRequest):
     hashed_pw = pwd_context.hash(payload.password)
     try:
-        await db["users"].insert_one({
+        res = await db["users"].insert_one({
             "email": str(payload.email),
-            "password": hashed_pw
+            "password": hashed_pw,
+            "createdAt": datetime.utcnow(),
         })
     except DuplicateKeyError:
         raise HTTPException(status_code=400, detail="User already exists")
-    return {"message": "Signup successful"}
+    # return userId so frontend can store it
+    return {
+        "message": "Signup successful",
+        "email": str(payload.email),
+        "userId": str(res.inserted_id),
+    }
 
 @router.post("/login")
 async def login(payload: LoginRequest):
     user = await db["users"].find_one({"email": str(payload.email)})
     if not user or not pwd_context.verify(payload.password, user["password"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    return {"message": "Login successful", "email": user["email"]}
+    # include userId for linking sessions
+    return {
+        "message": "Login successful",
+        "email": user["email"],
+        "userId": str(user["_id"]),
+    }
 
 @router.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest):

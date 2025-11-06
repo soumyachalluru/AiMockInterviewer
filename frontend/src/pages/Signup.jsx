@@ -5,6 +5,8 @@ import axios from "axios";
 import image from "/public/2207.i101.025.F.m004.c9.machine learning deep learning isometric.jpg";
 import "./Welcome.css"; // reuse same css
 
+const API = import.meta.env?.VITE_API_URL || "http://127.0.0.1:8000";
+
 const Signup = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -26,11 +28,12 @@ const Signup = () => {
 
     setLoading(true);
     try {
-      const response = await axios.post("http://127.0.0.1:8000/auth/signup", {
+      const response = await axios.post(`${API}/auth/signup`, {
         email,
         password,
       });
       setSuccess(response.data.message || "Account created");
+      // keep your existing flow: go back to login
       setTimeout(() => navigate("/"), 1200);
     } catch (err) {
       if (err.response) setError(err.response.data.detail);
@@ -42,7 +45,6 @@ const Signup = () => {
 
   return (
     <div className="welcome-container">
-      {/* left image panel (same as welcome) */}
       <div className="left-panel">
         <img src={image} alt="AI Visual" className="ai-image" />
         <p className="image-credit">
@@ -53,7 +55,6 @@ const Signup = () => {
         </p>
       </div>
 
-      {/* right form panel */}
       <div className="right-panel">
         <div className="login-card">
           <h2 className="login-title">Create an Account</h2>

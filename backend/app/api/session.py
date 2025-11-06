@@ -1,9 +1,8 @@
-# backend/app/api/session.py
 import uuid
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, HTTPException, Path, Query
 from pydantic import BaseModel, EmailStr
 
 from ..core import ner
@@ -14,11 +13,13 @@ from ..core.database import db
 # all session routes live under /session
 router = APIRouter(prefix="/session", tags=["session"])
 
-
 # =========================
 # models
 # =========================
 class SessionReq(BaseModel):
+    # NEW: userId is optional (keeps backward compat); if provided we store it
+    userId: Optional[str] = None
+    # legacy email still accepted
     email: Optional[EmailStr] = None
     company: Optional[str] = None
     role: Optional[str] = None
@@ -26,11 +27,9 @@ class SessionReq(BaseModel):
     user_text: str                # free-text brief
     session_id: Optional[str] = None
 
-
 class SessionResp(BaseModel):
     session_id: str
     question: str
-
 
 # =========================
 # helpers
@@ -42,9 +41,8 @@ def _merge(form: SessionReq, slots: dict):
         "level":   (form.level   or (slots or {}).get("level")   or "").strip(),
     }
 
-
 # Normalize a session document coming from either schema variant:
-#   Variant A (your create() below): { _id: sid, startedAt, endedAt, ... }
+#   Variant A (create() below): { _id: sid, startedAt, endedAt, ... }
 #   Variant B (older code): { sessionId: sid, createdAt, updatedAt, overallScore, ... }
 def _normalize_session_doc(doc: dict) -> dict:
     if not doc:
@@ -65,8 +63,8 @@ def _normalize_session_doc(doc: dict) -> dict:
         "level": doc.get("level"),
         "overallScore": overall,
         "userEmail": doc.get("userEmail"),
+        "userId": doc.get("userId"),
     }
-
 
 # =========================
 # create / reset
@@ -103,44 +101,47 @@ async def create(req: SessionReq):
         )
     )
 
-    # persist the session doc (Variant A)
+    # persist the session doc (Variant A) — store BOTH userId and userEmail if provided
     try:
+        set_on_insert = {
+            "_id": sid,
+            "sessionId": sid,  # keep both ids for compatibility
+            "company": merged["company"],
+            "level": merged["level"] or None,
+            "role": merged["role"],
+            "startedAt": datetime.utcnow(),
+            "endedAt": None,
+            "durationSec": None,
+            "setup": {
+                "form": {
+                    "company": req.company,
+                    "role": req.role,
+                    "level": req.level,
+                    "user_text": req.user_text,
+                },
+                "ner": {
+                    "company": (slots or {}).get("company"),
+                    "role": (slots or {}).get("role"),
+                    "level": (slots or {}).get("level"),
+                },
+                "merged": merged,
+            },
+            "scores": None,
+        }
+        if req.email:
+            set_on_insert["userEmail"] = str(req.email).lower()
+        if req.userId:
+            set_on_insert["userId"] = str(req.userId)
+
         await db["sessions"].update_one(
             {"_id": sid},
-            {
-                "$setOnInsert": {
-                    "_id": sid,
-                    "userEmail": (str(req.email).lower() if req.email else None),
-                    "company": merged["company"],
-                    "level": merged["level"] or None,
-                    "role": merged["role"],
-                    "startedAt": datetime.utcnow(),
-                    "endedAt": None,
-                    "durationSec": None,
-                    "setup": {
-                        "form": {
-                            "company": req.company,
-                            "role": req.role,
-                            "level": req.level,
-                            "user_text": req.user_text,
-                        },
-                        "ner": {
-                            "company": (slots or {}).get("company"),
-                            "role": (slots or {}).get("role"),
-                            "level": (slots or {}).get("level"),
-                        },
-                        "merged": merged,
-                    },
-                    "scores": None,
-                }
-            },
+            {"$setOnInsert": set_on_insert},
             upsert=True,
         )
     except Exception as e:
         print("[warn] session insert/upsert failed:", e)
 
     return {"session_id": data["session_id"], "question": data["question"]}
-
 
 @router.patch("/{sid}", response_model=SessionResp)
 async def reset(req: SessionReq, sid: str = Path(..., description="Existing session to reset")):
@@ -154,24 +155,33 @@ async def reset(req: SessionReq, sid: str = Path(..., description="Existing sess
     req.session_id = sid
     return await create(req)
 
-
 # =========================
 # dashboard helpers
 # =========================
-
 @router.get("/list")
-async def list_sessions():
+async def list_sessions(
+    userId: Optional[str] = Query(None, description="Preferred filter"),
+    email: Optional[str] = Query(None, description="Legacy fallback filter"),
+):
     """
-    Return all sessions (most recent first).
-    If you have auth/userEmail, filter by {"userEmail": current_user_email}.
+    Returns only this user's sessions.
+    - If userId is provided, filter by userId.
+    - Else if email is provided, filter by userEmail.
+    - Else return empty [] (avoid leaking all sessions).
     Works with either sessions schema variant.
     """
-    # pull all docs, normalize, sort by created/started desc
-    cur = db["sessions"].find({})
+    q = {}
+    if userId:
+        q["userId"] = str(userId)
+    elif email:
+        q["userEmail"] = str(email).strip().lower()
+    else:
+        return []
+
+    cur = db["sessions"].find(q)
     docs = [_normalize_session_doc(s) async for s in cur]
     docs.sort(key=lambda d: d.get("createdAt") or datetime.min, reverse=True)
     return docs
-
 
 @router.get("/{session_id}/summary")
 async def session_summary(session_id: str):

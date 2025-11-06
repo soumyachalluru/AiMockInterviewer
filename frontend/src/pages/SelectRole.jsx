@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import axios from "axios";
 import "./SelectRole.css";
@@ -8,7 +8,27 @@ const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 const SelectRole = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const email = location.state?.email || localStorage.getItem("email") || "";
+  const emailFromState = (location.state?.email || "").trim().toLowerCase();
+  const userIdFromState = (location.state?.userId || "").trim();
+
+  // prefer state; fall back to localStorage
+  const [email, setEmail] = useState(
+    emailFromState || (localStorage.getItem("email") || "").trim().toLowerCase()
+  );
+  const [userId, setUserId] = useState(
+    userIdFromState || (localStorage.getItem("userId") || "").trim()
+  );
+
+  // persist identity if it came via state
+  useEffect(() => {
+    try {
+      if (emailFromState) localStorage.setItem("email", emailFromState);
+      if (userIdFromState) localStorage.setItem("userId", userIdFromState);
+    } catch {}
+    if (emailFromState) setEmail(emailFromState);
+    if (userIdFromState) setUserId(userIdFromState);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [emailFromState, userIdFromState]);
 
   const [company, setCompany] = useState("");
   const [level, setLevel] = useState("");     // free text (e.g., L2, junior)
@@ -40,7 +60,8 @@ const SelectRole = () => {
       company,
       role,
       level,
-      email: email || undefined,
+      email: email || undefined,     // legacy linkage stays
+      userId: userId || undefined,   // NEW reliable linkage
     };
 
     try {
@@ -154,4 +175,3 @@ const SelectRole = () => {
 };
 
 export default SelectRole;
-

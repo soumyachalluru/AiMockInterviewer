@@ -18,6 +18,7 @@ const fmtDateTime = (dt) => {
   try { return new Date(dt).toLocaleString(); } catch { return ""; }
 };
 const cap1 = (s) => (typeof s === "string" && s.length ? s[0].toUpperCase() + s.slice(1) : s);
+const to1 = (v) => (v == null ? null : Math.round(Number(v) * 10) / 10);
 
 // neutral greys for charts
 const GREY = "#6b7280";
@@ -28,8 +29,6 @@ const PIE_GREYS = ["#374151", "#4b5563", "#6b7280", "#9ca3af", "#d1d5db", "#e5e7
 /**
  * Evenly sample across PIE_GREYS, but avoid the two palest tones so nothing
  * looks white on a white background.
- * - minIdx = 0 (darkest)
- * - maxIdx = PIE_GREYS.length - 3 (skip the last two ultra-light colors)
  */
 const pickFromGreys = (i, n) => {
   const minIdx = 0;
@@ -55,18 +54,40 @@ export default function Dashboard() {
   const handleLogout = () => {
     try {
       localStorage.removeItem("email");
+      localStorage.removeItem("userId");
       localStorage.removeItem("token");
       localStorage.removeItem("session_id");
     } catch {}
     navigate("/", { replace: true });
   };
 
-  // --- load & normalize session list (de-dupe by sessionId) ---
+  // --- load & normalize session list (for the current user only) ---
   useEffect(() => {
     (async () => {
-      const r = await axios.get(`${API}/session/list`);
-      const raw = r.data || [];
+      // identity
+      const storedUserId = (localStorage.getItem("userId") || "").trim();
+      const storedEmail  = (localStorage.getItem("email") || "").trim().toLowerCase();
 
+      if (!storedUserId && !storedEmail) {
+        // no identity -> go back to Welcome/Login
+        navigate("/", { replace: true });
+        return;
+      }
+
+      const qp = storedUserId
+        ? `userId=${encodeURIComponent(storedUserId)}`
+        : `email=${encodeURIComponent(storedEmail)}`;
+      const url = `${API}/session/list?${qp}`;
+
+      let raw = [];
+      try {
+        const r = await axios.get(url);
+        raw = r.data || [];
+      } catch (e) {
+        console.error("Failed to load sessions:", e);
+      }
+
+      // de-dupe by sessionId and pick most recent createdAt/startedAt
       const map = new Map();
       for (const s of raw) {
         const sessionId = s.sessionId;
@@ -89,6 +110,7 @@ export default function Dashboard() {
           map.set(sessionId, item);
         }
       }
+
       const list = Array.from(map.values()).sort(
         (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
       );
@@ -98,7 +120,7 @@ export default function Dashboard() {
       // default to summary if no explicit session_id was passed
       if (!initialSessionId) setActiveId(null);
     })();
-  }, [initialSessionId]);
+  }, [initialSessionId, navigate]);
 
   // --- load turns for the active session ---
   useEffect(() => {
@@ -115,8 +137,13 @@ export default function Dashboard() {
           feedback: x.feedback,
           score: typeof x.score === "number" ? x.score : null,
           createdAt: x.createdAt,
+          // NEW: metrics (may be undefined for older sessions)
+          metrics: x.metrics || null,
         }));
         setTurns(t);
+      } catch (e) {
+        console.error("Failed to load session summary:", e);
+        setTurns([]);
       } finally {
         setLoading(false);
       }
@@ -142,18 +169,24 @@ export default function Dashboard() {
                 index: t.index,
                 score: typeof t.score === "number" ? t.score : null,
                 createdAt: t.createdAt,
+                // NEW: carry metrics for global summary
+                metrics: t.metrics || null,
               });
             });
           }
         });
         setAllTurns(merged);
+      } catch (e) {
+        console.error("Failed loading all summaries:", e);
+        setAllTurns([]);
       } finally {
         setLoadingSummary(false);
       }
     })();
   }, [sessions]);
 
-  const active = useMemo(
+  // single declaration (prevents "Identifier 'active'..." error)
+  const activeSession = useMemo(
     () => (activeId ? sessions.find((s) => s.sessionId === activeId) || null : null),
     [sessions, activeId]
   );
@@ -161,12 +194,12 @@ export default function Dashboard() {
   // --- overall (session) ---
   const overall = useMemo(() => {
     if (!activeId) return null;
-    if (active?.overallScore != null) return active.overallScore;
+    if (activeSession?.overallScore != null) return activeSession.overallScore;
     const nums = turns.map((t) => t.score).filter((n) => typeof n === "number");
     if (!nums.length) return null;
     const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
     return Math.round(avg * 10) / 10;
-  }, [activeId, active, turns]);
+  }, [activeId, activeSession, turns]);
 
   // --- charts (per-session) ---
   const barData = turns.map((t) => ({ name: `Q${t.index + 1}`, score: t.score ?? 0 }));
@@ -184,6 +217,26 @@ export default function Dashboard() {
     { name: "5–7", value: buckets.mid },
     { name: "8–10", value: buckets.high },
   ];
+
+  // ---- NEW: per-session metric averages (current session only) ----
+  const sessionMetricAvg = useMemo(() => {
+    const vals = { tech: [], comp: [], clar: [], tone: [] };
+    turns.forEach((t) => {
+      const m = t.metrics;
+      if (!m) return;
+      if (typeof m.technical_correctness === "number") vals.tech.push(m.technical_correctness);
+      if (typeof m.completeness === "number") vals.comp.push(m.completeness);
+      if (typeof m.clarity === "number") vals.clar.push(m.clarity);
+      if (typeof m.tone === "number") vals.tone.push(m.tone);
+    });
+    const avg = (arr) => (arr.length ? to1(arr.reduce((a, b) => a + b, 0) / arr.length) : null);
+    return {
+      technical_correctness: avg(vals.tech),
+      completeness: avg(vals.comp),
+      clarity: avg(vals.clar),
+      tone: avg(vals.tone),
+    };
+  }, [turns]);
 
   // --- summary metrics (all sessions) ---
   const summary = useMemo(() => {
@@ -280,6 +333,24 @@ export default function Dashboard() {
         };
       });
 
+    // ---- NEW: overall metrics across ALL questions in ALL sessions ----
+    const mVals = { tech: [], comp: [], clar: [], tone: [] };
+    allTurns.forEach((t) => {
+      const m = t.metrics;
+      if (!m) return;
+      if (typeof m.technical_correctness === "number") mVals.tech.push(m.technical_correctness);
+      if (typeof m.completeness === "number") mVals.comp.push(m.completeness);
+      if (typeof m.clarity === "number") mVals.clar.push(m.clarity);
+      if (typeof m.tone === "number") mVals.tone.push(m.tone);
+    });
+    const avg = (arr) => (arr.length ? to1(arr.reduce((a, b) => a + b, 0) / arr.length) : null);
+    const overallMetrics = {
+      technical_correctness: avg(mVals.tech),
+      completeness: avg(mVals.comp),
+      clarity: avg(mVals.clar),
+      tone: avg(mVals.tone),
+    };
+
     return {
       totalSessions: sessions.length,
       totalQuestions: allTurns.length,
@@ -294,12 +365,14 @@ export default function Dashboard() {
       scoreBySession,
       avgByCompany,
       recent,
+      overallMetrics, // NEW
     };
   }, [sessions, allTurns]);
 
-  const heading = activeId && active
-    ? `${active.company} — ${active.role || "Interview"}${active.level ? ` (${active.level})` : ""}`
-    : "All Interviews";
+  const heading =
+    activeId && activeSession
+      ? `${activeSession.company} — ${activeSession.role || "Interview"}${activeSession.level ? ` (${activeSession.level})` : ""}`
+      : "All Interviews";
 
   return (
     <div className="dash-wrap">
@@ -356,8 +429,8 @@ export default function Dashboard() {
         <div className="topbar">
           <div className="title-block">
             <h1>{heading}</h1>
-            {activeId && active?.createdAt && (
-              <div className="subtitle">Interviewed on: {fmtDateTime(active.createdAt)}</div>
+            {activeId && activeSession?.createdAt && (
+              <div className="subtitle">Interviewed on: {fmtDateTime(activeSession.createdAt)}</div>
             )}
           </div>
 
@@ -407,7 +480,7 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {/* Roles Practiced — pie (spaced greys) */}
+                {/* Roles Practiced — pie */}
                 <div className="card">
                   <div className="card-title">Roles Practiced</div>
                   <div className="chart-wrap">
@@ -488,6 +561,31 @@ export default function Dashboard() {
                           <Line type="monotone" dataKey="y" stroke={GREY} strokeWidth={2} dot />
                         </LineChart>
                       </ResponsiveContainer>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* NEW: Overall Skill Metrics (half-left, half-right) */}
+              <div className="cards-grid">
+                <div className="card">
+                  <div className="card-title">Overall Skill Metrics (All Sessions)</div>
+                  <div className="stats-grid" style={{gridTemplateColumns: "1fr 1fr"}}>
+                    <div className="stat">
+                      <div className="k">{summary.overallMetrics.technical_correctness ?? "—"}</div>
+                      <div className="l">Technical Correctness</div>
+                    </div>
+                    <div className="stat">
+                      <div className="k">{summary.overallMetrics.completeness ?? "—"}</div>
+                      <div className="l">Completeness</div>
+                    </div>
+                    <div className="stat">
+                      <div className="k">{summary.overallMetrics.clarity ?? "—"}</div>
+                      <div className="l">Clarity</div>
+                    </div>
+                    <div className="stat">
+                      <div className="k">{summary.overallMetrics.tone ?? "—"}</div>
+                      <div className="l">Tone</div>
                     </div>
                   </div>
                 </div>
@@ -575,17 +673,72 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              <div className="turns">
-                {turns.map((t) => (
-                  <div key={t.index} className="turn-card">
-                    <div className="row"><strong>Question {t.index + 1}:</strong> {t.question}</div>
-                    <div className="row"><strong>You:</strong> {t.userAnswer}</div>
-                    <div className="row"><strong>Feedback:</strong> {t.feedback}</div>
-                    {typeof t.score === "number" && (
-                      <div className="row score-line"><strong>Score:</strong> {t.score}/10</div>
-                    )}
+              {/* NEW: Session averages for metrics */}
+              <div className="cards-grid">
+                <div className="card">
+                  <div className="card-title">Session Averages (Metrics)</div>
+                  <div className="stats-grid" style={{gridTemplateColumns: "1fr 1fr"}}>
+                    <div className="stat">
+                      <div className="k">{sessionMetricAvg.technical_correctness ?? "—"}</div>
+                      <div className="l">Technical Correctness</div>
+                    </div>
+                    <div className="stat">
+                      <div className="k">{sessionMetricAvg.completeness ?? "—"}</div>
+                      <div className="l">Completeness</div>
+                    </div>
+                    <div className="stat">
+                      <div className="k">{sessionMetricAvg.clarity ?? "—"}</div>
+                      <div className="l">Clarity</div>
+                    </div>
+                    <div className="stat">
+                      <div className="k">{sessionMetricAvg.tone ?? "—"}</div>
+                      <div className="l">Tone</div>
+                    </div>
                   </div>
-                ))}
+                </div>
+              </div>
+
+              <div className="turns">
+                {turns.map((t) => {
+                  const m = t.metrics || {};
+                  const flags = m.flags || {};
+                  return (
+                    <div key={t.index} className="turn-card">
+                      <div className="row"><strong>Question {t.index + 1}:</strong> {t.question}</div>
+                      <div className="row"><strong>You:</strong> {t.userAnswer}</div>
+                      <div className="row"><strong>Feedback:</strong> {t.feedback}</div>
+
+                      {/* NEW: per-question metrics */}
+                      {t.metrics ? (
+                        <div className="row">
+                          <div style={{display:"flex", flexWrap:"wrap", gap:"8px"}}>
+                            <span className="meta-score">Tech: {to1(m.technical_correctness) ?? "—"}/10</span>
+                            <span className="meta-score">Complete: {to1(m.completeness) ?? "—"}/10</span>
+                            <span className="meta-score">Clarity: {to1(m.clarity) ?? "—"}/10</span>
+                            <span className="meta-score">Tone: {to1(m.tone) ?? "—"}/10</span>
+                            {(flags.gibberish || flags.off_topic || flags.dont_know || flags.policy_violation) && (
+                              <span className="meta-score" style={{color:"#b91c1c"}}>
+                                Flags: {[
+                                  flags.gibberish && "gibberish",
+                                  flags.off_topic && "off-topic",
+                                  flags.dont_know && "don’t-know",
+                                  flags.policy_violation && "policy",
+                                ].filter(Boolean).join(", ")}
+                              </span>
+                            )}
+                            {m.notes && <span className="meta-score">Note: {m.notes}</span>}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="row"><em>Metrics not available for this turn.</em></div>
+                      )}
+
+                      {typeof t.score === "number" && (
+                        <div className="row score-line"><strong>Score:</strong> {t.score}/10</div>
+                      )}
+                    </div>
+                  );
+                })}
                 {!turns.length && <div className="empty">No turns recorded.</div>}
               </div>
             </>
